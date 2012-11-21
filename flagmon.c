@@ -54,7 +54,7 @@ int process_payload(const u_char* data, int size){
 
     int pcreExecRet = pcre_exec(reCompiled,
                             pcreExtra,
-                            data,
+                            buf,
                             size,
                             0,                      // Start looking at this point
                             0,                      // OPTIONS
