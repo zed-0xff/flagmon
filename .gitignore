@@ -17,3 +17,5 @@
 *.app
 
 flagmon
+tmp
+out

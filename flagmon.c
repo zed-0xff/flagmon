@@ -12,6 +12,7 @@
 #include <netinet/tcp.h>
 #include <pcre.h>
 
+#include "flagmon.h"
 #include "hexdump.c"
 
 #define FLAG_REGEXP     "\\W\\w{31}="
@@ -20,7 +21,9 @@
 #define PCAP_PERIOD 100 // pcap kernel poll period, ms
 
 #define MAX_FILTER_LEN 4096
-#define ETHER_SIZE sizeof(struct ether_header)
+#define DEFAULT_FILTER "port not 22 and port not 443"
+
+#define MAX_LOCAL_IPS 128
 
 enum { 
     VERBOSITY_DEFAULT,
@@ -30,18 +33,19 @@ enum {
     VERBOSITY_ALL_ETHERNET_DATA
 };
 
-//static int do_stop=0;
-static int verbosity = 0;
-static int promisc = 0;
+static int verbosity = 0, promisc = 0, write_all_packets = 0;
 
 static pcap_t *pcap_handle;
 static pcap_dumper_t *pcap_dumper = NULL;
 
+static uint32_t local_ips[MAX_LOCAL_IPS] = {0};
+
 pcre *reCompiled;
 pcre_extra *pcreExtra;
 
-static unsigned int total_packets = 0;
-static unsigned int total_matches = 0;
+static unsigned int total_packets = 0, total_matches = 0, total_sessions = 0;
+
+#include "tcp.c"
 
 int process_payload(const u_char* data, int size){
     static char buf[65536];
@@ -108,16 +112,18 @@ void show_ip_packet(struct iphdr*ip, int sport, int dport){
     }
 
     if( sport == -1 && dport == -1 ){
-        printf("%-15s -> %-15s\n", ip2s(ip->saddr), ip2s(ip->daddr) );
+        printf("%-15s -> ", ip2s(ip->saddr) );
+        printf("%-15s\n",   ip2s(ip->daddr) );
     } else {
-        printf("%-15s:%-5d -> %-15s:%-5d\n", 
-                ip2s(ip->saddr), ntohs(sport),
-                ip2s(ip->daddr), ntohs(dport)
-                );
+        printf("%-15s:%-5d -> ", ip2s(ip->saddr), ntohs(sport) );
+        printf("%-15s:%-5d\n",   ip2s(ip->daddr), ntohs(dport) );
     }
 }
 
-int decode_ip(const u_char *data, int size){
+int decode_ip(const struct pcap_pkthdr *header, const u_char *packet){
+    const u_char* data = packet + ETHER_SIZE;
+    int size = header->caplen - ETHER_SIZE;
+
     struct iphdr* ip = (struct iphdr*) data;
     int size_ip = ip->ihl * 4;
     int sport = -1, dport = -1;
@@ -135,22 +141,28 @@ int decode_ip(const u_char *data, int size){
 
     switch( ip->protocol ){
         case IPPROTO_ICMP:
+            if( write_all_packets ) write_packet(header, packet, "ICMP");
             payload += 8; // ICMP hdr size = 8
             break;
         case IPPROTO_TCP:
             if( size >= 24 ){
-                struct tcphdr *tcp = (struct tcphdr*)(data+size_ip);
                 // ethernet hdr size = 20
                 // sport size        =  2
                 // dport size        =  2
+                struct tcphdr *tcp = (struct tcphdr*)(data+size_ip);
+                if( write_all_packets ) write_tcp_packet(header, packet, tcp);
                 sport = tcp->source;
                 dport = tcp->dest;
                 if( size >= (20 + sizeof(struct tcphdr)) ){
-                    payload      = data + size_ip + tcp->doff*4;
+                    payload = data + size_ip + tcp->doff*4;
                 }
+            } else {
+                // malformed tcp?
+                write_packet(header, packet, NULL);
             }
             break;
         case IPPROTO_UDP:
+            if( write_all_packets ) write_packet(header, packet, "UDP");
             if( size >= 24 ){
                 // ethernet hdr size = 20
                 // sport size        =  2
@@ -160,9 +172,15 @@ int decode_ip(const u_char *data, int size){
 
                 if( size >= 26 ){ // udp_hdr.length
                     int udp_len = *(uint16_t*)(data+size_ip+4);
-                    payload      = data+size_ip+8;
+                    payload = data+size_ip+8;
                 }
             }
+            break;
+
+        default:
+            // IP, nut not TCP nor UDP
+            // payload alredy set to (data+size_ip)
+            if( write_all_packets ) write_packet(header, packet, NULL);
             break;
     }
     
@@ -210,22 +228,84 @@ int decode_ip(const u_char *data, int size){
     return matched;
 }
 
+
+// WARNING: must return string w/o spaces or NULL
+const char* ethertype2s(int type){
+    switch(type){
+        case ETHERTYPE_IP:
+            return "IP";
+        case ETHERTYPE_IPV6:
+            return "IPV6";
+        case ETHERTYPE_ARP:
+            return "ARP";
+    }
+    return NULL;
+}
+
 void show_ether_packet(const u_char *data, int size){
     struct ether_header* eptr = (struct ether_header *) data;
+    const char *stype;
 
     printf("[.] ");
-    switch( ntohs(eptr->ether_type) ){
-        case ETHERTYPE_IP:
-            printf("IP ");
-            break;
-        case ETHERTYPE_ARP:
-            printf("ARP ");
-            break;
-        default:
-            printf("ethertype=0x%04x ", ntohs(eptr->ether_type));
-            break;
+    stype = ethertype2s(ntohs(eptr->ether_type));
+    if( stype ){
+        printf("%s ", stype);
+    } else {
+        printf("ethertype=0x%04x ", ntohs(eptr->ether_type));
     }
     puts("");
+}
+
+void write_packet(const struct pcap_pkthdr *header, const u_char *packet, const char*pfname){
+    char fname[512],*p;
+    int i;
+    FILE *f;
+
+    strcpy(fname, "out/");
+    p = fname+strlen(fname);
+
+    if( pfname ){
+        strncpy(p, pfname, sizeof(fname) - (p-fname));
+        fname[sizeof(fname)-1] = 0;
+    } else {
+        for(i=0; i<6; i++,p+=2) sprintf(p, "%02x", packet[i]);
+        *p++ = '-';
+        for(i=6; i<12; i++,p+=2) sprintf(p, "%02x", packet[i]);
+        sprintf(p, "-%02x%02x", packet[12]&0xff, packet[13]&0xff);
+    }
+    
+    f = fopen(fname, "ab");
+    if( !f ){
+        fprintf(stderr, "[!] cannot append to %s: ", fname);
+        perror("");
+        return;
+    }
+
+    if( 0 == ftell(f)){
+        // write first packet with pcap hdr
+        pcap_dumper_t* dumper = pcap_dump_fopen(pcap_handle, f);
+        if( !dumper ){
+            fclose(f);
+            fprintf(stderr, "[!] Couldn't open file %s: %s\n", fname, pcap_geterr(pcap_handle));
+            return;
+        }
+
+        pcap_dump((u_char*)dumper, header, packet);
+        pcap_dump_close(dumper);
+    } else {
+        // append 2nd and further packets manually
+        
+        pcaprec_hdr_t rec_hdr; // record header
+        // we cannot directly write pcap_pkthdr to file b/c it uses 64-bit timeval 
+        // on 64-bit platforms, and .PCAP files always use 32-bit timeval
+        rec_hdr.ts_sec   = header->ts.tv_sec;
+        rec_hdr.ts_usec  = header->ts.tv_usec;
+        rec_hdr.incl_len = header->caplen;
+        rec_hdr.orig_len = header->len;
+        fwrite(&rec_hdr, sizeof(rec_hdr), 1, f);
+        fwrite(packet, 1, header->caplen, f);
+        fclose(f);
+    }
 }
 
 void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet){
@@ -240,9 +320,11 @@ void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char
 	if( size < ETHER_SIZE ) return;
 
         type = ntohs(eptr->ether_type);
-        if( type == ETHERTYPE_IP ){
-            matched = decode_ip(packet+ETHER_SIZE, size - ETHER_SIZE);
+        if( type == ETHERTYPE_IP){
+            matched = decode_ip(header, packet);
         } else {
+            if( write_all_packets ) write_packet(header, packet, ethertype2s(type));
+
             if( verbosity == VERBOSITY_EVERY_PACKET_INFO){
                 show_ether_packet(packet, size);
             }
@@ -265,7 +347,11 @@ void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char
 
 	switch(verbosity){
             case VERBOSITY_DEFAULT:
-                printf("\r[.] packets: %5d, matches: %5d", total_packets, total_matches);
+                if( write_all_packets ){
+                    printf("\r[.] packets: %5d, sessions: %5d, matches: %5d", total_packets, total_sessions, total_matches);
+                } else {
+                    printf("\r[.] packets: %5d, matches: %5d", total_packets, total_matches);
+                }
                 fflush(NULL);
                 break;
             case VERBOSITY_ALL_ETHERNET_DATA:
@@ -311,13 +397,14 @@ void init_pcre(){
 
 void usage(char *name) {
         fprintf(stderr,
-                "usage: %s [-i iface] [-r fname] [-w fname] [-v] [-v] [-q] [-p] [expression]\n\n"
+                "usage: %s [-i iface] [-r fname] [-w fname] [-vqpa] [expression]\n\n"
 		"\t -i : capture interface (default: auto)\n"
 		"\t -r : read packets from file (default: live capture)\n"
 		"\t -w : write MATCHED packets to a .pcap file (default: no)\n"
 		"\t -p : use promiscuous mode (default: no)\n"
 		"\t -v : increase verbosity, can be used multiple times\n"
 		"\t -q : decrease verbosity, can be used multiple times\n"
+		"\t -a : write all packets to ./out/*.pcap files, try to dissect TCP sessions\n"
 		"\t last argument is an optional PCAP filter expression.\n",
                 name);
 }
@@ -334,7 +421,7 @@ int main (int argc, char *argv[]){
 	int c,i;
 	char* pcap_write_fname = NULL, *pcap_read_fname = NULL;
 
-        while ((c = getopt(argc, argv, "i:hvpqw:r:")) != EOF) {
+        while ((c = getopt(argc, argv, "i:hvpqw:r:a")) != EOF) {
                 switch (c) {
                 case 'h': // show usage
                         usage(argv[0]);
@@ -357,18 +444,26 @@ int main (int argc, char *argv[]){
                 case 'r': // read packets from file
                         pcap_read_fname = optarg;
                         break;
+                case 'a': // write all packets
+                        write_all_packets = 1;
+                        mkdir("out",0755);
+                        break;
                 default:
                         exit(EXIT_FAILURE);
                 }
         }
 	argc -= optind; argv += optind;
 
-        *filter_exp = 0;
-	while( argc > 0 && argv && *argv && (strlen(filter_exp)+strlen(*argv)+2) < MAX_FILTER_LEN ){
-            if(*filter_exp) strcat(filter_exp, " ");
-            strcat(filter_exp, *argv);
-            argc--; argv++;
-	}
+        if( argc > 0 ){
+            *filter_exp = 0;
+            while( argc > 0 && argv && *argv && (strlen(filter_exp)+strlen(*argv)+2) < MAX_FILTER_LEN ){
+                if(*filter_exp) strcat(filter_exp, " ");
+                strcat(filter_exp, *argv);
+                argc--; argv++;
+            }
+        } else {
+            strcpy(filter_exp, DEFAULT_FILTER);
+        }
 
         init_pcre();
 
@@ -418,6 +513,34 @@ int main (int argc, char *argv[]){
 		fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(pcap_handle));
 		return (2);
 	}
+
+        // enum devs to get all local ips
+        pcap_if_t *alldevs, *d;
+        pcap_addr_t *pa;
+        int nips = 0;
+        if (pcap_findalldevs(&alldevs, errbuf) == -1)
+        {
+            fprintf(stderr,"Error in pcap_findalldevs: %s\n", errbuf);
+            exit(1);
+        }
+        for(d=alldevs; d; d=d->next)
+        {
+            for(pa = d->addresses; pa; pa=pa->next){
+                if( pa->addr->sa_family == AF_INET ){
+                    struct sockaddr_in *addr = (struct sockaddr_in*) pa->addr;
+                    local_ips[nips++] = *(uint32_t*)&addr->sin_addr;
+                }
+            }
+        }
+        pcap_freealldevs(alldevs);
+        local_ips[nips] = 0;
+
+	printf("[.] local ips:");
+        for(i=0;local_ips[i];i++){
+            if( i>0 ) putchar(',');
+            printf(" %s",ip2s(local_ips[i]));
+        }
+        puts("");
 
 	signal(SIGINT,  on_interrupt);
 	signal(SIGTERM, on_interrupt);
