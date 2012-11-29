@@ -524,7 +524,7 @@ int main (int argc, char *argv[]){
                 fprintf(stderr,"Error in pcap_findalldevs: %s\n", errbuf);
                 exit(1);
             }
-            for(d=alldevs; d; d=d->next)
+            for(d=alldevs; d && nips < MAX_LOCAL_IPS; d=d->next)
             {
                 for(pa = d->addresses; pa; pa=pa->next){
                     if( pa->addr->sa_family == AF_INET ){
@@ -538,7 +538,7 @@ int main (int argc, char *argv[]){
                 }
             }
             pcap_freealldevs(alldevs);
-            local_ips[nips] = 0;
+            local_ips[nips >= MAX_LOCAL_IPS ? (MAX_LOCAL_IPS-1) : nips] = 0;
 
             printf("[.] local ips:");
             for(i=0;local_ips[i];i++){
