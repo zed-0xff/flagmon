@@ -348,9 +348,9 @@ void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char
 	switch(verbosity){
             case VERBOSITY_DEFAULT:
                 if( write_all_packets ){
-                    printf("\r[.] packets: %5d, sessions: %5d, matches: %5d", total_packets, total_sessions, total_matches);
+                    printf("\r[.] %5d packets, %5d sessions, %5d matches", total_packets, total_sessions, total_matches);
                 } else {
-                    printf("\r[.] packets: %5d, matches: %5d", total_packets, total_matches);
+                    printf("\r[.] %5d packets, %5d matches", total_packets, total_matches);
                 }
                 fflush(NULL);
                 break;
@@ -514,33 +514,39 @@ int main (int argc, char *argv[]){
 		return (2);
 	}
 
-        // enum devs to get all local ips
-        pcap_if_t *alldevs, *d;
-        pcap_addr_t *pa;
-        int nips = 0;
-        if (pcap_findalldevs(&alldevs, errbuf) == -1)
-        {
-            fprintf(stderr,"Error in pcap_findalldevs: %s\n", errbuf);
-            exit(1);
-        }
-        for(d=alldevs; d; d=d->next)
-        {
-            for(pa = d->addresses; pa; pa=pa->next){
-                if( pa->addr->sa_family == AF_INET ){
-                    struct sockaddr_in *addr = (struct sockaddr_in*) pa->addr;
-                    local_ips[nips++] = *(uint32_t*)&addr->sin_addr;
+        if( write_all_packets ){
+            // enum devs to get all local ips
+            pcap_if_t *alldevs, *d;
+            pcap_addr_t *pa;
+            int nips = 0;
+            if (pcap_findalldevs(&alldevs, errbuf) == -1)
+            {
+                fprintf(stderr,"Error in pcap_findalldevs: %s\n", errbuf);
+                exit(1);
+            }
+            for(d=alldevs; d; d=d->next)
+            {
+                for(pa = d->addresses; pa; pa=pa->next){
+                    if( pa->addr->sa_family == AF_INET ){
+                        struct sockaddr_in *addr = (struct sockaddr_in*) pa->addr;
+                        local_ips[nips++] = *(uint32_t*)&addr->sin_addr;
+                        if( nips >= MAX_LOCAL_IPS ){
+                            fprintf(stderr, "[?] too many local_ips, using only %d first ones\n", MAX_LOCAL_IPS);
+                            break;
+                        }
+                    }
                 }
             }
-        }
-        pcap_freealldevs(alldevs);
-        local_ips[nips] = 0;
+            pcap_freealldevs(alldevs);
+            local_ips[nips] = 0;
 
-	printf("[.] local ips:");
-        for(i=0;local_ips[i];i++){
-            if( i>0 ) putchar(',');
-            printf(" %s",ip2s(local_ips[i]));
+            printf("[.] local ips:");
+            for(i=0;local_ips[i];i++){
+                if( i>0 ) putchar(',');
+                printf(" %s",ip2s(local_ips[i]));
+            }
+            puts("");
         }
-        puts("");
 
 	signal(SIGINT,  on_interrupt);
 	signal(SIGTERM, on_interrupt);
