@@ -17,5 +17,11 @@
 *.app
 
 flagmon
+flagmon32
+flagmon*static
 tmp
 out
+
+1.c
+2.c
+3.c
