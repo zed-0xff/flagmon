@@ -103,7 +103,7 @@ void write_tcp_packet(const struct pcap_pkthdr *header, const u_char *packet, st
 
         switch( direction ){
             case DIR_IN:
-                sprintf(ps->fname, "TCP-IN-%d-from-%d.%d.%d.%d",
+                sprintf(ps->fname, "tcp-in-%d-from-%d.%d.%d.%d",
                     ntohs(ps->dport),
                     (ps->saddr      ) & 0xff,
                     (ps->saddr >>  8) & 0xff,
@@ -112,7 +112,7 @@ void write_tcp_packet(const struct pcap_pkthdr *header, const u_char *packet, st
                 );
                 break;
             case DIR_OUT:
-                sprintf(ps->fname, "TCP-OUT-%d.%d.%d.%d:%d",
+                sprintf(ps->fname, "tcp-out-%d.%d.%d.%d-%d",
                     (ps->daddr      ) & 0xff,
                     (ps->daddr >>  8) & 0xff,
                     (ps->daddr >> 16) & 0xff,
@@ -120,7 +120,7 @@ void write_tcp_packet(const struct pcap_pkthdr *header, const u_char *packet, st
                 );
                 break;
             default:
-                sprintf(ps->fname, "TCP-%d.%d.%d.%d:%d-%d.%d.%d.%d:%d",
+                sprintf(ps->fname, "tcp-%d.%d.%d.%d-%d-%d.%d.%d.%d-%d",
                     (ps->saddr      ) & 0xff,
                     (ps->saddr >>  8) & 0xff,
                     (ps->saddr >> 16) & 0xff,
@@ -151,7 +151,7 @@ void write_tcp_packet(const struct pcap_pkthdr *header, const u_char *packet, st
         time( &ps->last_activity );
         write_packet(header, packet, ps->fname);
     } else {
-        sprintf(fname, "TCP-%d.%d.%d.%d:%d-%d.%d.%d.%d:%d",
+        sprintf(fname, "tcp-%d.%d.%d.%d-%d-%d.%d.%d.%d-%d",
             (ip->saddr      ) & 0xff,
             (ip->saddr >>  8) & 0xff,
             (ip->saddr >> 16) & 0xff,

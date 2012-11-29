@@ -143,7 +143,7 @@ int decode_ip(const struct pcap_pkthdr *header, const u_char *packet){
 
     switch( ip->protocol ){
         case IPPROTO_ICMP:
-            if( write_all_packets ) write_packet(header, packet, "ICMP");
+            if( write_all_packets ) write_packet(header, packet, "icmp");
             payload += 8; // ICMP hdr size = 8
             break;
         case IPPROTO_TCP:
@@ -164,7 +164,7 @@ int decode_ip(const struct pcap_pkthdr *header, const u_char *packet){
             }
             break;
         case IPPROTO_UDP:
-            if( write_all_packets ) write_packet(header, packet, "UDP");
+            if( write_all_packets ) write_packet(header, packet, "udp");
             if( size >= 24 ){
                 // ethernet hdr size = 20
                 // sport size        =  2
@@ -231,15 +231,15 @@ int decode_ip(const struct pcap_pkthdr *header, const u_char *packet){
 }
 
 
-// WARNING: must return string w/o spaces or NULL
+// WARNING: must return LOWERCASE string w/o spaces or NULL
 const char* ethertype2s(int type){
     switch(type){
         case ETHERTYPE_IP:
-            return "IP";
+            return "ip";
         case ETHERTYPE_IPV6:
-            return "IPV6";
+            return "ipv6";
         case ETHERTYPE_ARP:
-            return "ARP";
+            return "arp";
     }
     return NULL;
 }
@@ -251,7 +251,8 @@ void show_ether_packet(const u_char *data, int size){
     printf("[.] ");
     stype = ethertype2s(ntohs(eptr->ether_type));
     if( stype ){
-        printf("%s ", stype);
+        const char *p = stype;
+        while(*p) putchar(toupper(*p++));
     } else {
         printf("ethertype=0x%04x ", ntohs(eptr->ether_type));
     }
@@ -267,13 +268,12 @@ void write_packet(const struct pcap_pkthdr *header, const u_char *packet, const 
     p = fname+strlen(fname);
 
     if( pfname ){
-        strncpy(p, pfname, sizeof(fname) - (p-fname));
-        fname[sizeof(fname)-1] = 0;
+        snprintf(p, sizeof(fname)-(p-fname)-1, "%s.pcap", pfname);
     } else {
         for(i=0; i<6; i++,p+=2) sprintf(p, "%02x", packet[i]);
         *p++ = '-';
         for(i=6; i<12; i++,p+=2) sprintf(p, "%02x", packet[i]);
-        sprintf(p, "-%02x%02x", packet[12]&0xff, packet[13]&0xff);
+        sprintf(p, "-%02x%02x.pcap", packet[12]&0xff, packet[13]&0xff);
     }
     
     f = fopen(fname, "ab");
@@ -399,14 +399,15 @@ void init_pcre(){
 
 void usage(char *name) {
         fprintf(stderr,
-                "usage: %s [-i iface] [-r fname] [-w fname] [-vqpa] [expression]\n\n"
+                "usage: %s [-i iface] [-r fname] [-w fname] [-L ip] [-vqpa] [expression]\n\n"
 		"\t -i : capture interface (default: auto)\n"
 		"\t -r : read packets from file (default: live capture)\n"
 		"\t -w : write MATCHED packets to a .pcap file (default: no)\n"
 		"\t -p : use promiscuous mode (default: no)\n"
 		"\t -v : increase verbosity, can be used multiple times\n"
 		"\t -q : decrease verbosity, can be used multiple times\n"
-		"\t -a : write all packets to ./out/*.pcap files, try to dissect TCP sessions\n"
+		"\t -a : write all packets to ./out/*.pcap files + try to dissect TCP sessions\n"
+		"\t -L : add IP to list of local ips, usually useful only with both -a & -r\n"
 		"\t last argument is an optional PCAP filter expression.\n",
                 name);
 }
@@ -422,8 +423,9 @@ int main (int argc, char *argv[]){
 	const u_char   *packet;
 	int c,i;
 	char* pcap_write_fname = NULL, *pcap_read_fname = NULL;
+        int nips = 0;
 
-        while ((c = getopt(argc, argv, "i:hvpqw:r:a")) != EOF) {
+        while ((c = getopt(argc, argv, "i:hvpqw:r:aL:")) != EOF) {
                 switch (c) {
                 case 'h': // show usage
                         usage(argv[0]);
@@ -449,6 +451,12 @@ int main (int argc, char *argv[]){
                 case 'a': // write all packets
                         write_all_packets = 1;
                         mkdir("out",0755);
+                        break;
+                case 'L': // add local ip
+                        if(nips < MAX_LOCAL_IPS-1){
+                            local_ips[nips++] = inet_addr(optarg);
+                            local_ips[nips] = 0;
+                        }
                         break;
                 default:
                         exit(EXIT_FAILURE);
@@ -516,7 +524,7 @@ int main (int argc, char *argv[]){
 		return (2);
 	}
 
-        if( write_all_packets ){
+        if( write_all_packets && local_ips[0] == 0 ){
             // enum devs to get all local ips
             pcap_if_t *alldevs, *d;
             pcap_addr_t *pa;
@@ -541,7 +549,9 @@ int main (int argc, char *argv[]){
             }
             pcap_freealldevs(alldevs);
             local_ips[nips >= MAX_LOCAL_IPS ? (MAX_LOCAL_IPS-1) : nips] = 0;
+        }
 
+        if( local_ips[0] ){
             printf("[.] local ips:");
             for(i=0;local_ips[i];i++){
                 if( i>0 ) putchar(',');
