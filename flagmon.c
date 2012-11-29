@@ -527,7 +527,7 @@ int main (int argc, char *argv[]){
             for(d=alldevs; d && nips < MAX_LOCAL_IPS; d=d->next)
             {
                 for(pa = d->addresses; pa; pa=pa->next){
-                    if( pa->addr->sa_family == AF_INET ){
+                    if( pa->addr && pa->addr->sa_family == AF_INET ){
                         struct sockaddr_in *addr = (struct sockaddr_in*) pa->addr;
                         local_ips[nips++] = *(uint32_t*)&addr->sin_addr;
                         if( nips >= MAX_LOCAL_IPS ){
