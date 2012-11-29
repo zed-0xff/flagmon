@@ -25,7 +25,9 @@
 
 #define MAX_LOCAL_IPS 128
 
-enum { 
+enum {
+    VERBOSITY_SILENT = -2,
+    VERBOSITY_QUIET,
     VERBOSITY_DEFAULT,
     VERBOSITY_EVERY_PACKET_INFO,
     VERBOSITY_ALL_PAYLOAD_DATA,
@@ -217,12 +219,12 @@ int decode_ip(const struct pcap_pkthdr *header, const u_char *packet){
     if( payload_size >= FLAG_LENGTH ){
         matched = process_payload(payload, payload_size);
         if( matched ){
-            if( verbosity <= VERBOSITY_DEFAULT ){
+            if( verbosity > VERBOSITY_SILENT){ 
                 puts("");
                 show_ip_packet(ip, sport, dport);
             }
             printf("[*] MATCH!\n");
-            hexdump(payload, payload_size);
+            if( verbosity > VERBOSITY_QUIET) hexdump(payload, payload_size);
         }
     }
     return matched;
